@@ -317,7 +317,7 @@ class SkillAttachToCart(RayaSkill):
                               f'{cart_attached}')
                 
                 if self.gripper_state['cart_attached'] is False:
-                    self.abort(**ERROR_COULDNT_ATTACH_TO_CART)
+                    self.abort(*ERROR_COULDNT_ATTACH_TO_CART)
                 break
 
 
