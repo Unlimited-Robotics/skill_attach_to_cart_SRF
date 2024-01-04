@@ -9,6 +9,7 @@ from .constants import *
 
 from skills.approach_to_tags import SkillApproachToTags
 import math
+import time
 
 ### TODO fix parameters to defult
 ### add timeout to each function
@@ -24,6 +25,7 @@ class SkillAttachToCart(RayaSkill):
             'max_angle_step': 15.0
             }
     REQUIRED_SETUP_ARGS = {
+        'actual_desired_position'
     }
     
 
@@ -94,12 +96,22 @@ class SkillAttachToCart(RayaSkill):
 
     async def gripper_state_classifier(self):
         ### TODO add position value check
-        if (self.gripper_state['pressure_reached'] == True and\
+        # Check if the position (0 or 1) and pressure were reached
+        if (self.gripper_state['pressure_reached'] == True and \
             self.gripper_state['position_reached'] == False):
-                
-                self.gripper_state['cart_attached'] = True
-        else:
 
+            # If the pressure was reached but the position wasnt reached, that
+            # means the adapter touched something. Check if the adapter is close
+            # to the actual desired position and mark the cart as attached
+            if self.gripper_state['close_to_actual_position'] == True:
+                self.gripper_state['cart_attached'] = True
+
+            # If its not, try to attach again
+            else:
+                await self.send_feedback('Actual desired position not reached. Attaching again...')
+                self.state = 'attaching'
+
+        else:
             self.gripper_state['cart_attached'] = False
             self.state = 'finish'
 
@@ -118,20 +130,23 @@ class SkillAttachToCart(RayaSkill):
                 enable_obstacles=False,
                 wait=False, 
                 )
+        
+        start_time = time.time()
         while (self.motion.is_moving()):
             dl=self.sensors.get_sensor_value('srf')['5'] * 100
             dr=self.sensors.get_sensor_value('srf')['2'] * 100
             delta = dl - dr
             angle  = abs(math.tan(delta/DISTANCE_BETWEEN_SRF_SENSORS)/math.pi * 180)
-
-            if abs(angle-verification_angle) > VERIFICATION_ANGLE or\
-                  verification_dl-dl > VERIFICATION_DISTANCE or\
-                      verification_dr-dr > VERIFICATION_DISTANCE:
-                self.log.info('finish cart attach verification')
-                self.state = 'finish'
-                break
-
             await asyncio.sleep(0.2)
+
+            if abs(time.time() - start_time) > 2:
+                if dl < VERIFICATION_DISTANCE or dr < VERIFICATION_DISTANCE:
+                    self.log.info('finish cart attach verification')
+                    self.gripper_state['cart_attached'] = True
+                else:
+                    self.gripper_state['cart_attached'] = True
+                    
+                self.state = 'finish'
 
 
     async def attach(self):
@@ -147,17 +162,17 @@ class SkillAttachToCart(RayaSkill):
                                                     parameters={
                                                             'gripper':'cart',
                                                             'goal':GRIPPER_CLOSE_POSITION,
-                                                            'velocity':0.3,
+                                                            'velocity':0.2,
                                                             'pressure':GRIPPER_CLOSE_PRESSURE_CONST,
                                                             'timeout':10.0
                                                         }, 
                                                     wait=True,
                                                 )
-            self.log.info(gripper_result)
+            await self.send_feedback(gripper_result)
             await self.gripper_feedback_cb(gripper_result)
             await self.gripper_state_classifier()
             cart_attached = self.gripper_state['cart_attached']
-            self.log.info(f'gripper attachment feedback is: {cart_attached}')
+            await self.send_feedback({'cart_attached_success' : cart_attached})
 
             if cart_attached:
                 self.state = 'attach_verification'
@@ -180,6 +195,8 @@ class SkillAttachToCart(RayaSkill):
         self.gripper_state['pressure_reached'] = gripper_result['pressure_reached']
         self.gripper_state['success'] = gripper_result['success']
         self.gripper_state['timeout_reached'] = gripper_result['timeout_reached']
+        if abs(gripper_result['final_position'] - self.setup_args['actual_desired_position']) < POSITION_ERROR_MARGIN: 
+            self.gripper_state['close_to_actual_position'] = True
 
 
     async def move_backwared(self):
@@ -210,7 +227,7 @@ class SkillAttachToCart(RayaSkill):
                                                     parameters={
                                                             'gripper':'cart',
                                                             'goal':GRIPPER_OPEN_POSITION,
-                                                            'velocity':0.5,
+                                                            'velocity':0.1,
                                                             'pressure':GRIPPER_OPEN_PRESSURE_CONST,
                                                             'timeout':10.0
                                                         }, 
@@ -256,7 +273,8 @@ class SkillAttachToCart(RayaSkill):
                             'pressure_reached': False,
                             'success': False,
                             'timeout_reached': False,
-                            'cart_attached': False}
+                            'cart_attached': False,
+                            'close_to_actual_position' : False}
 
 
     async def main(self):
@@ -281,12 +299,13 @@ class SkillAttachToCart(RayaSkill):
 
             if self.state == 'moving':
                 await self.move_backwared()
-                
+            
+            elif self.state == 'attaching':
+                await self.attach()
+
             elif (self.state == 'rotating'):
                 await self.adjust_angle()
 
-            elif self.state == 'attaching':
-                await self.attach()
 
 
             elif self.state == 'attach_verification':
@@ -294,8 +313,11 @@ class SkillAttachToCart(RayaSkill):
 
             elif self.state == 'finish':
                 cart_attached = self.gripper_state['cart_attached']
-                self.log.info('application finished, cart attachment is: '\
+                await self.send_feedback('application finished, cart attachment is: '\
                               f'{cart_attached}')
+                
+                if self.gripper_state['cart_attached'] is False:
+                    self.abort(**ERROR_COULDNT_ATTACH_TO_CART)
                 break
 
 
