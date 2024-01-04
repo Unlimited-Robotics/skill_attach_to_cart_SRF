@@ -144,7 +144,7 @@ class SkillAttachToCart(RayaSkill):
                     self.log.info('finish cart attach verification')
                     self.gripper_state['cart_attached'] = True
                 else:
-                    self.gripper_state['cart_attached'] = True
+                    self.gripper_state['cart_attached'] = False
                     
                 self.state = 'finish'
 
